@@ -1,6 +1,5 @@
-const puppeteer = require("puppeteer-core");
 const chromium = require("@sparticuz/chromium");
-const fetch = require("node-fetch");
+const puppeteer = require("puppeteer-core");
 
 let LAST_STATUS = null;
 let LAST_NOTIFY = 0;
@@ -13,17 +12,18 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: "Missing url param" });
   }
 
-  let browser;
+  let browser = null;
 
   try {
     browser = await puppeteer.launch({
       args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(),
       headless: chromium.headless,
     });
 
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
 
     const result = await page.evaluate(() => {
       // 🔴 AGOTADO
@@ -31,18 +31,18 @@ module.exports = async function handler(req, res) {
         return { status: "RED" };
       }
 
-      const bodyText = document.body.innerText.toLowerCase();
+      const text = document.body.innerText.toLowerCase();
 
       // 🟢 FILA VIRTUAL
       if (
-        bodyText.includes("fila virtual") ||
-        bodyText.includes("alta demanda") ||
-        bodyText.includes("por favor espere")
+        text.includes("fila virtual") ||
+        text.includes("alta demanda") ||
+        text.includes("por favor espere")
       ) {
         return { status: "GREEN", queue: true };
       }
 
-      // 🟢 BOTONES DE COMPRA
+      // 🟢 BOTÓN DE COMPRA
       if (
         document.querySelector("#show-button") ||
         document.querySelector(".action-container button") ||
@@ -64,18 +64,17 @@ module.exports = async function handler(req, res) {
       LAST_STATUS !== result.status || now - LAST_NOTIFY > cooldownMs;
 
     if (shouldNotify && result.status === "GREEN") {
-      let message = "🟢 ENTRADAS DISPONIBLES";
+      const telegramUrl =
+        `https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`;
 
-      if (result.queue) {
-        message = "⏳ FILA VIRTUAL ACTIVA";
-      }
-
-      await fetch(`https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`, {
+      await fetch(telegramUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: process.env.TG_CHAT,
-          text: `${message}\n${url}`,
+          text:
+            (result.queue ? "⏳ FILA VIRTUAL ACTIVA\n" : "🟢 ENTRADAS DISPONIBLES\n") +
+            url,
         }),
       });
 
@@ -90,7 +89,7 @@ module.exports = async function handler(req, res) {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("PUPPETEER ERROR:", err);
     res.status(500).json({ error: err.message });
   } finally {
     if (browser) await browser.close();
