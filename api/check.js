@@ -12,6 +12,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    // 🔽 Fetch del HTML
     const response = await fetch(url, {
       headers: {
         "User-Agent":
@@ -22,33 +23,54 @@ module.exports = async function handler(req, res) {
     const html = await response.text();
     const $ = cheerio.load(html);
 
+    const bodyText = $("body").text().toLowerCase();
+
     let status = "RED";
     let reason = "agotado";
 
-    // 🔴 AGOTADO
-    if ($(".event-status.status-soldout").length > 0) {
-      status = "RED";
-      reason = "agotado";
-    }
+    /* ==================================================
+       1️⃣ SEÑALES POSITIVAS (GREEN) — TIENEN PRIORIDAD
+       ================================================== */
 
-    // 🟢 Seleccionar función
+    // 🟢 Botones claros de compra
+    $("button, a").each((_, el) => {
+      const text = $(el).text().toLowerCase();
+      if (
+        text.includes("ver entradas") ||
+        text.includes("comprar") ||
+        text.includes("comprar ahora")
+      ) {
+        status = "GREEN";
+        reason = "ver_entradas";
+      }
+    });
+
+    // 🟢 Selección de función / dropdown activo
     if (
-      $("button#show-button").length > 0 ||
+      $("#show-button").length > 0 ||
       $(".dropdown-toggle").length > 0 ||
-      $("body").text().toLowerCase().includes("seleccioná la función")
+      bodyText.includes("seleccioná la función") ||
+      bodyText.includes("selecciona la función")
     ) {
       status = "GREEN";
       reason = "seleccionar_funcion";
     }
 
-    // 🟢 Botón ver entradas
-    $("button, a").each((_, el) => {
-      const text = $(el).text().toLowerCase();
-      if (text.includes("ver entradas") || text.includes("comprar")) {
-        status = "GREEN";
-        reason = "ver_entradas";
-      }
-    });
+    /* ==================================================
+       2️⃣ SOLO SI NO HUBO GREEN → CONSIDERAR AGOTADO
+       ================================================== */
+
+    if (
+      status !== "GREEN" &&
+      $(".event-status.status-soldout").length > 0
+    ) {
+      status = "RED";
+      reason = "agotado";
+    }
+
+    /* ==================================================
+       3️⃣ NOTIFICACIÓN TELEGRAM (ANTI-SPAM)
+       ================================================== */
 
     const now = Date.now();
     const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
@@ -88,6 +110,7 @@ module.exports = async function handler(req, res) {
       LAST_STATUS = "RED";
     }
 
+    // 🔁 Respuesta HTTP
     res.status(200).json({
       status,
       reason,
