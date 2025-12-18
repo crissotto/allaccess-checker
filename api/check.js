@@ -1,75 +1,56 @@
-import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium";
+const chromium = require("@sparticuz/chromium");
+const puppeteer = require("puppeteer-core");
 
 let LAST_STATUS = null;
 let LAST_NOTIFY = 0;
 const COOLDOWN_MINUTES = 10;
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   const url = req.query.url;
+
   if (!url) {
     return res.status(400).json({ error: "Missing url param" });
   }
 
-  const browser = await puppeteer.launch({
-    args: chromium.args,
-    executablePath: await chromium.executablePath(),
-    headless: chromium.headless
-  });
+  let browser = null;
 
   try {
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
 
     const result = await page.evaluate(() => {
-
       // 🔴 AGOTADO
       if (document.querySelector(".event-status.status-soldout")) {
         return { status: "RED" };
       }
 
-      const bodyText = document.body.innerText.toLowerCase();
+      const text = document.body.innerText.toLowerCase();
 
       // 🟢 FILA VIRTUAL
       if (
-        bodyText.includes("fila virtual") ||
-        bodyText.includes("alta demanda") ||
-        bodyText.includes("por favor espere")
+        text.includes("fila virtual") ||
+        text.includes("alta demanda") ||
+        text.includes("por favor espere")
       ) {
         return { status: "GREEN", queue: true };
       }
 
-      const functions = Array.from(
-        document.querySelectorAll(".show-item, .function-item")
-      );
-
-      let hasTickets = false;
-      let hasPriority = false;
-
-      functions.forEach(fn => {
-        const text = fn.innerText.toLowerCase();
-        const button = fn.querySelector("button, a");
-
-        if (button && fn.offsetParent !== null) {
-          hasTickets = true;
-          if (text.includes("31/03")) {
-            hasPriority = true;
-          }
-        }
-      });
-
+      // 🟢 BOTÓN DE COMPRA
       if (
         document.querySelector("#show-button") ||
-        document.querySelector(".action-container button")
+        document.querySelector(".action-container button") ||
+        Array.from(document.querySelectorAll("button,a")).some(el =>
+          el.offsetParent !== null &&
+          /ver entradas|comprar/i.test(el.innerText)
+        )
       ) {
-        hasTickets = true;
-      }
-
-      if (hasPriority) {
-        return { status: "GREEN", priority: true };
-      }
-
-      if (hasTickets) {
         return { status: "GREEN" };
       }
 
@@ -80,25 +61,21 @@ export default async function handler(req, res) {
     const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
 
     const shouldNotify =
-      LAST_STATUS !== result.status ||
-      now - LAST_NOTIFY > cooldownMs;
+      LAST_STATUS !== result.status || now - LAST_NOTIFY > cooldownMs;
 
     if (shouldNotify && result.status === "GREEN") {
-      let message = "🟢 ENTRADAS DISPONIBLES";
+      const telegramUrl =
+        `https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`;
 
-      if (result.queue) {
-        message = "⏳ FILA VIRTUAL ACTIVA";
-      } else if (result.priority) {
-        message = "🔥 PRIORIDAD 31/03 DISPONIBLE";
-      }
-
-      await fetch(`https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`, {
+      await fetch(telegramUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: process.env.TG_CHAT,
-          text: `${message}\n${url}`
-        })
+          text:
+            (result.queue ? "⏳ FILA VIRTUAL ACTIVA\n" : "🟢 ENTRADAS DISPONIBLES\n") +
+            url,
+        }),
       });
 
       LAST_STATUS = result.status;
@@ -107,14 +84,14 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       status: result.status,
-      priority: result.priority || false,
-      queue: result.queue || false,
-      checkedAt: new Date().toISOString()
+      queue: !!result.queue,
+      checkedAt: new Date().toISOString(),
     });
 
   } catch (err) {
+    console.error("PUPPETEER ERROR:", err);
     res.status(500).json({ error: err.message });
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
-}
+};
