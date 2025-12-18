@@ -1,5 +1,4 @@
-const chromium = require("@sparticuz/chromium");
-const puppeteer = require("puppeteer-core");
+const cheerio = require("cheerio");
 
 let LAST_STATUS = null;
 let LAST_NOTIFY = 0;
@@ -12,86 +11,91 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: "Missing url param" });
   }
 
-  let browser = null;
-
   try {
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
+      },
     });
 
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    const html = await response.text();
+    const $ = cheerio.load(html);
 
-    const result = await page.evaluate(() => {
-      // 🔴 AGOTADO
-      if (document.querySelector(".event-status.status-soldout")) {
-        return { status: "RED" };
+    let status = "RED";
+    let reason = "agotado";
+
+    // 🔴 AGOTADO
+    if ($(".event-status.status-soldout").length > 0) {
+      status = "RED";
+      reason = "agotado";
+    }
+
+    // 🟢 Seleccionar función
+    if (
+      $("button#show-button").length > 0 ||
+      $(".dropdown-toggle").length > 0 ||
+      $("body").text().toLowerCase().includes("seleccioná la función")
+    ) {
+      status = "GREEN";
+      reason = "seleccionar_funcion";
+    }
+
+    // 🟢 Botón ver entradas
+    $("button, a").each((_, el) => {
+      const text = $(el).text().toLowerCase();
+      if (text.includes("ver entradas") || text.includes("comprar")) {
+        status = "GREEN";
+        reason = "ver_entradas";
       }
-
-      const text = document.body.innerText.toLowerCase();
-
-      // 🟢 FILA VIRTUAL
-      if (
-        text.includes("fila virtual") ||
-        text.includes("alta demanda") ||
-        text.includes("por favor espere")
-      ) {
-        return { status: "GREEN", queue: true };
-      }
-
-      // 🟢 BOTÓN DE COMPRA
-      if (
-        document.querySelector("#show-button") ||
-        document.querySelector(".action-container button") ||
-        Array.from(document.querySelectorAll("button,a")).some(el =>
-          el.offsetParent !== null &&
-          /ver entradas|comprar/i.test(el.innerText)
-        )
-      ) {
-        return { status: "GREEN" };
-      }
-
-      return { status: "RED" };
     });
 
     const now = Date.now();
     const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
 
     const shouldNotify =
-      LAST_STATUS !== result.status || now - LAST_NOTIFY > cooldownMs;
+      status === "GREEN" &&
+      (LAST_STATUS !== "GREEN" || now - LAST_NOTIFY > cooldownMs);
 
-    if (shouldNotify && result.status === "GREEN") {
+    if (shouldNotify) {
       const telegramUrl =
         `https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`;
+
+      let message = "🟢 ENTRADAS DISPONIBLES";
+
+      if (reason === "seleccionar_funcion") {
+        message = "🟢 SELECCIONÁ LA FUNCIÓN";
+      }
+
+      if (reason === "ver_entradas") {
+        message = "🔥 VER ENTRADAS DISPONIBLE";
+      }
 
       await fetch(telegramUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: process.env.TG_CHAT,
-          text:
-            (result.queue ? "⏳ FILA VIRTUAL ACTIVA\n" : "🟢 ENTRADAS DISPONIBLES\n") +
-            url,
+          text: `${message}\n${url}`,
         }),
       });
 
-      LAST_STATUS = result.status;
+      LAST_STATUS = "GREEN";
       LAST_NOTIFY = now;
     }
 
+    if (status === "RED") {
+      LAST_STATUS = "RED";
+    }
+
     res.status(200).json({
-      status: result.status,
-      queue: !!result.queue,
+      status,
+      reason,
       checkedAt: new Date().toISOString(),
     });
 
   } catch (err) {
-    console.error("PUPPETEER ERROR:", err);
+    console.error(err);
     res.status(500).json({ error: err.message });
-  } finally {
-    if (browser) await browser.close();
   }
 };
