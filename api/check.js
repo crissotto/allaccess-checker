@@ -8,11 +8,13 @@ module.exports = async function handler(req, res) {
   const url = req.query.url;
 
   if (!url) {
-    return res.status(400).json({ error: "Missing url param" });
+    return res.status(400).json({ error: "Missing url param ?url=" });
   }
 
   try {
-    // 🔽 Fetch del HTML
+    /* ============================
+       FETCH HTML
+    ============================ */
     const response = await fetch(url, {
       headers: {
         "User-Agent":
@@ -22,55 +24,49 @@ module.exports = async function handler(req, res) {
 
     const html = await response.text();
     const $ = cheerio.load(html);
-
     const bodyText = $("body").text().toLowerCase();
 
     let status = "RED";
     let reason = "agotado";
 
-    /* ==================================================
-       1️⃣ SEÑALES POSITIVAS (GREEN) — TIENEN PRIORIDAD
-       ================================================== */
+    /* ============================
+       SELECTORES ALLACCESS
+    ============================ */
 
-    // 🟢 Botones claros de compra
-    $("button, a").each((_, el) => {
-      const text = $(el).text().toLowerCase();
-      if (
-        text.includes("ver entradas") ||
-        text.includes("comprar") ||
-        text.includes("comprar ahora")
-      ) {
-        status = "GREEN";
-        reason = "ver_entradas";
-      }
-    });
+    // Banner "Agotado"
+    const soldOut =
+      $(".event-status.status-soldout span")
+        .text()
+        .toLowerCase()
+        .includes("agotado");
 
-    // 🟢 Selección de función / dropdown activo
-    if (
-      $("#show-button").length > 0 ||
-      $(".dropdown-toggle").length > 0 ||
-      bodyText.includes("seleccioná la función") ||
-      bodyText.includes("selecciona la función")
-    ) {
+    // Contenedor de funciones
+    const hasPickerBar = $("#picker-bar").length > 0;
+
+    // Bloqueos reales
+    const hardBlock =
+      bodyText.includes("no hay funciones disponibles") ||
+      bodyText.includes("no hay entradas disponibles");
+
+    /* ============================
+       DECISIÓN FINAL
+    ============================ */
+
+    // 🟢 Eventos dinámicos (ej: Bad Bunny)
+    if (hasPickerBar && !hardBlock) {
       status = "GREEN";
-      reason = "seleccionar_funcion";
+      reason = "disponible";
     }
 
-    /* ==================================================
-       2️⃣ SOLO SI NO HUBO GREEN → CONSIDERAR AGOTADO
-       ================================================== */
-
-    if (
-      status !== "GREEN" &&
-      $(".event-status.status-soldout").length > 0
-    ) {
+    // 🔴 Realmente agotado (ej: AC/DC)
+    if (soldOut && !hasPickerBar) {
       status = "RED";
       reason = "agotado";
     }
 
-    /* ==================================================
-       3️⃣ NOTIFICACIÓN TELEGRAM (ANTI-SPAM)
-       ================================================== */
+    /* ============================
+       TELEGRAM (ANTI SPAM)
+    ============================ */
 
     const now = Date.now();
     const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
@@ -79,28 +75,18 @@ module.exports = async function handler(req, res) {
       status === "GREEN" &&
       (LAST_STATUS !== "GREEN" || now - LAST_NOTIFY > cooldownMs);
 
-    if (shouldNotify) {
-      const telegramUrl =
-        `https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`;
-
-      let message = "🟢 ENTRADAS DISPONIBLES";
-
-      if (reason === "seleccionar_funcion") {
-        message = "🟢 SELECCIONÁ LA FUNCIÓN";
-      }
-
-      if (reason === "ver_entradas") {
-        message = "🔥 VER ENTRADAS DISPONIBLE";
-      }
-
-      await fetch(telegramUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: process.env.TG_CHAT,
-          text: `${message}\n${url}`,
-        }),
-      });
+    if (shouldNotify && process.env.TG_TOKEN && process.env.TG_CHAT) {
+      await fetch(
+        `https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: process.env.TG_CHAT,
+            text: `🟢 ENTRADAS DISPONIBLES\n${url}`,
+          }),
+        }
+      );
 
       LAST_STATUS = "GREEN";
       LAST_NOTIFY = now;
@@ -110,15 +96,17 @@ module.exports = async function handler(req, res) {
       LAST_STATUS = "RED";
     }
 
-    // 🔁 Respuesta HTTP
+    /* ============================
+       RESPONSE
+    ============================ */
+
     res.status(200).json({
       status,
       reason,
       checkedAt: new Date().toISOString(),
     });
-
   } catch (err) {
-    console.error(err);
+    console.error("ERROR:", err.message);
     res.status(500).json({ error: err.message });
   }
 };
