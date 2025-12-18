@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "dependencies": {
     "puppeteer-core": "^21.6.0",
-    "@sparticuz/chromium": "^123.0.0",
-    "node-fetch": "^2.6.9"
+    "@sparticuz/chromium": "^123.0.0"
   }
 }
